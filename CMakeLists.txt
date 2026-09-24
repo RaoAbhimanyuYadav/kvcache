@@ -15,6 +15,7 @@ include_directories(${PROJECT_SOURCE_DIR}/include)
 
 add_executable(kvcache
     src/main.cpp
+    src/server.cpp
 )
 
 target_compile_options(kvcache PRIVATE
@@ -23,6 +24,12 @@ target_compile_options(kvcache PRIVATE
     -Wextra
     -Wpedantic
 )
+
+
+add_library(store STATIC src/store.cpp)
+add_library(resp_parser STATIC src/resp_parser.cpp)
+
+target_link_libraries(kvcache PRIVATE store resp_parser)
 
 # --------------------------------------------------
 # Google Tests Import
@@ -72,6 +79,9 @@ add_executable(smoke_test
 )
 target_link_libraries(smoke_test PRIVATE gtest_main)
 
+add_executable(store_tests tests/store_tests.cpp)
+target_link_libraries(store_tests PRIVATE gtest_main store)
+
 
 # --------------------------------------------------
 # Tests Discovery
@@ -80,7 +90,7 @@ target_link_libraries(smoke_test PRIVATE gtest_main)
 include(GoogleTest)
 gtest_discover_tests(smoke_test)
 gtest_discover_tests(kvcache_test)
-
+gtest_discover_tests(store_tests)
 # add_test(
 #     NAME SmokeTest
 #     COMMAND smoke_test
