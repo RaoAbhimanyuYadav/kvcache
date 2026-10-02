@@ -9,27 +9,22 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include_directories(${PROJECT_SOURCE_DIR}/include)
 
 
-# --------------------------------------------------
-# Kvcache server
-# --------------------------------------------------
+add_library(resp_parser STATIC src/resp_parser.cpp)
 
-add_executable(kvcache
-    src/main.cpp
-    src/server.cpp
-)
+add_library(store STATIC src/store.cpp)
 
+add_library(kvcache_server STATIC src/server.cpp)
+target_link_libraries(kvcache_server PRIVATE resp_parser)
+
+
+add_executable(kvcache src/main.cpp )
+target_link_libraries(kvcache PRIVATE kvcache_server)
 target_compile_options(kvcache PRIVATE
     -O2
     -Wall
     -Wextra
     -Wpedantic
 )
-
-
-add_library(store STATIC src/store.cpp)
-add_library(resp_parser STATIC src/resp_parser.cpp)
-
-target_link_libraries(kvcache PRIVATE store resp_parser)
 
 # --------------------------------------------------
 # Google Tests Import
@@ -79,8 +74,21 @@ add_executable(smoke_test
 )
 target_link_libraries(smoke_test PRIVATE gtest_main)
 
+
+# --------------------------------------------------
+# Store Tests
+# --------------------------------------------------
+
 add_executable(store_tests tests/store_tests.cpp)
 target_link_libraries(store_tests PRIVATE gtest_main store)
+
+
+# --------------------------------------------------
+# Server Tests
+# --------------------------------------------------
+
+add_executable(server_tests tests/server_tests.cpp)
+target_link_libraries(server_tests PRIVATE gtest_main kvcache_server)
 
 
 # --------------------------------------------------
@@ -89,8 +97,9 @@ target_link_libraries(store_tests PRIVATE gtest_main store)
 
 include(GoogleTest)
 gtest_discover_tests(smoke_test)
-gtest_discover_tests(kvcache_test)
 gtest_discover_tests(store_tests)
+gtest_discover_tests(server_tests)
+gtest_discover_tests(kvcache_test)
 # add_test(
 #     NAME SmokeTest
 #     COMMAND smoke_test
