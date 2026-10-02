@@ -44,11 +44,16 @@ void PollingServer::accept_connections(){
     }
 }
 
+void PollingServer::close_connection(int fd){
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+    client_data.erase(fd);
+    close(fd); //TODO: research Automatically removes from epoll 
+}
+
 void PollingServer::read_data(int fd){
     char raw_buffer[BUFFER_SIZE];
     bool connection_closed = false;
     ClientContext *context = &client_data[fd];
-    std::string read_buf;
     while(true){
         ssize_t bytes_read = read(fd, raw_buffer, sizeof(raw_buffer)-1);
         if(bytes_read < 0){
@@ -68,45 +73,57 @@ void PollingServer::read_data(int fd){
         context->input_parser->feed(raw_buffer, bytes_read);
     }
     if(connection_closed){
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-        client_data.erase(fd);
-        close(fd);
+        close_connection(fd);
     }else{
         RESPObj result;
-        
-        if(context->input_parser->try_parse(result)){
+        while(context->input_parser->try_parse(result)){
             std::vector<std::string> request_array = context->input_parser->get_command_array(result);
-            if(request_array.size() == 0){
-                std::cout<<"REQUEST:: BAD \n";
-            }else{
-                if(request_array[0] == "PING"){
-                    std::string resp = "+PONG\r\n";
-                    std::cout<<"RESPONSE:: size = "<<resp.size()<<"\n";
-                    ssize_t bytes_written = write(fd, resp.data(), sizeof(resp));
-                    if (bytes_written == -1 && (errno != EAGAIN && errno != EWOULDBLOCK)) {
-                        std::cerr << "Write error on fd " << fd << std::endl;
-                        connection_closed = true;
-                    }
-                }else{
-                    std::cout<<"REQUEST:: undesired request\n";
-                }
+            
+            std::string resp;
+            if(!query_executer->execute(request_array, resp)){
+                close_connection(fd);
+                return;
             }
+            context->output_buffer.insert(context->output_buffer.end(), resp.begin(), resp.end());
+            
         }
-        /* TODO WRITE LOGIC*/
-        // while(read_buf.length() > 0){
-        //     ssize_t bytes_written = write(fd, read_buf.data(), read_buf.size());
-        //     if (bytes_written == -1 && (errno != EAGAIN && errno != EWOULDBLOCK)) {
-        //         std::cerr << "Write error on fd " << fd << std::endl;
-        //         connection_closed = true;
-        //         break;
-        //     }
-        //     if(bytes_written > 0){
-        //         read_buf.erase(0, bytes_written);
-        //     }
-        // }
+        write_data(fd);
     }
 }
 
+void PollingServer::write_data(int fd){
+    bool connection_closed = false;
+    ClientContext *context = &client_data[fd];
+
+    while(context->output_buffer.size() > 0){
+        ssize_t bytes_written = write(fd, context->output_buffer.data(), context->output_buffer.size());
+        if (bytes_written == -1) {
+            if(errno != EAGAIN || errno != EWOULDBLOCK){
+                // EPOLLOUT
+                epoll_event ev{};
+                ev.data.fd = fd;
+                ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP | EPOLLOUT;
+                epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+            }else{
+                std::cerr << "Write error on fd " << fd << std::endl;
+                connection_closed = true;
+            }
+            break;
+        }
+        if(bytes_written > 0){
+            context->output_buffer.erase(0, bytes_written);
+        }
+    }
+    if(context->output_buffer.size() == 0) {
+        epoll_event ev{};
+        ev.data.fd = fd;
+        ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
+        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+    }
+    if(connection_closed){
+        close_connection(fd);
+    }
+}
 int PollingServer::init(){
     epoll_event ev{};
     server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -150,6 +167,8 @@ int PollingServer::init(){
         goto error_state;
     }
 
+    query_executer = std::make_unique<QueryExecuter>();
+
     return 0;
     error_state:
         close(server_fd);
@@ -168,14 +187,15 @@ void PollingServer::run(){
             int fd = events[i].data.fd;
             if((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP)) {
                 std::cerr << "Epoll error or hangup on fd " << fd << std::endl;
-                client_data.erase(fd);
-                close(fd); // Automatically removes from epoll
+                close_connection(fd);
                 continue;
             }
             if(fd == server_fd){
                 accept_connections();
-            }else if (events[i].events&EPOLLIN){
+            }else if (events[i].events & EPOLLIN){
                 read_data(fd);
+            }else if (events[i].events & EPOLLOUT){
+                write_data(fd);
             }
         }
     }

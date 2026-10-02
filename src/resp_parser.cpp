@@ -10,6 +10,7 @@ void RESPParser::feed(const char* chunk, uint size){
 }
 
 bool RESPParser::try_parse(RESPObj &out_obj){
+    if(pos == data.size()) return false;
     size_t saved_pos = pos;
     try{
         out_obj = parse();
@@ -17,14 +18,20 @@ bool RESPParser::try_parse(RESPObj &out_obj){
     }catch(const IncompleteFrameException&){
         pos = saved_pos;
         return false;
+    }catch(const MalformedFrameException& err){
+        out_obj = RESPObj{
+            RESPArray{
+                RESPObj{"ERR"}, RESPObj{std::string(err.what())}
+            }
+        };
+        return true;
     }
 }
 
 
 RESPObj RESPParser::parse(){
-    if(pos >= data.size()){
-        throw std::runtime_error("Unexpected end of data stream");
-    }
+    if(pos >= data.size()) throw MalformedFrameException("Unexpected end of data stream");
+    
     char type_byte = data[pos++];
     switch(type_byte){
         case '+': return RESPObj{ parse_simple_string() };
@@ -32,7 +39,7 @@ RESPObj RESPParser::parse(){
         case ':': return RESPObj{ parse_integer() };
         case '$': return parse_bulk_string() ;
         case '*': return parse_array() ;
-        default: throw std::runtime_error("Unknow Resp type byte: " + std::to_string(type_byte));
+        default: throw MalformedFrameException("Unknow Resp type byte: " + std::to_string(type_byte));
     }
 }
 
@@ -53,26 +60,32 @@ std::string RESPParser::parse_simple_string(){
 std::string RESPParser::parse_error(){
     return "Error: " + std::string(read_until_crlf());
 }
+
 int64_t RESPParser::parse_integer(){
-    return std::stoll(std::string(read_until_crlf()));
+    int64_t value;
+    try{
+        return std::stoll(std::string(read_until_crlf()));
+    }catch(...){
+        throw MalformedFrameException("Expected a valid number");
+    }
 }
 RESPObj RESPParser::parse_bulk_string(){
     int64_t len = parse_integer();
-    if(len == -1) return RESPObj{nullptr};
+    if(len == -1) throw MalformedFrameException("Unable to get proper length of bulk string");
     if(pos + len + 2 > data.size()){
         throw IncompleteFrameException();
     }
     std::string payload(data.substr(pos, len));
     pos+=len;
     if(data.substr(pos, 2) != "\r\n"){
-        throw std::runtime_error("Malformed Bulk String: missing trailing CRLF");
+        throw MalformedFrameException("Malformed Bulk String: missing trailing CRLF");
     }
     pos += 2;
     return RESPObj{payload};
 }
 RESPObj RESPParser::parse_array(){
     int64_t size = parse_integer();
-    if(size == -1) return RESPObj{nullptr};
+    if(size == -1) throw MalformedFrameException("Unable to get proper length of array");
     RESPArray currentArray;
     currentArray.reserve(size);
     for(long long i=0; i<size; ++i){

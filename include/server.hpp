@@ -16,6 +16,7 @@
 
 #include "parser_strategy.hpp"
 #include "resp_parser.hpp"
+#include "query_executer.hpp"
 
 constexpr int MAX_EVENTS = 64;
 constexpr int BUFFER_SIZE = 4096;
@@ -39,12 +40,17 @@ class PollingServer{
     std::vector<epoll_event> events;
     std::unordered_map<int, ClientContext> client_data;
     std::string parser_method;
+    std::unique_ptr<QueryExecuter> query_executer;
 
     void set_addr_reuse_opt();
 
     void accept_connections();
 
+    void close_connection(int fd);
+
     void read_data(int fd);
+
+    void write_data(int fd);
 
     public:
     

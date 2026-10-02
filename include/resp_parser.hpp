@@ -15,6 +15,11 @@ class IncompleteFrameException : public std::runtime_error{
     IncompleteFrameException():std::runtime_error("Incomplete Resp Frame"){}
 };
 
+class MalformedFrameException : public std::runtime_error{
+    public:
+    MalformedFrameException(const std::string&& err) : std::runtime_error(err){}
+};
+
 class RESPParser:public ParserStrategy{
     public:
     explicit RESPParser();
