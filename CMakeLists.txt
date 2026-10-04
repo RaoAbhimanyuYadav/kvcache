@@ -26,6 +26,20 @@ target_compile_options(kvcache PRIVATE
     -Wpedantic
 )
 
+add_executable(kvcache_debug src/main.cpp )
+target_compile_options(kvcache_debug PRIVATE
+-O0
+-g
+-Wall
+-Wextra
+-Wpedantic
+-fsanitize=address,undefined
+-fno-omit-frame-pointer
+)
+target_link_options(kvcache_debug PRIVATE
+-fsanitize=address,undefined
+)
+target_link_libraries(kvcache_debug PRIVATE kvcache_server)
 # --------------------------------------------------
 # Google Tests Import
 # --------------------------------------------------

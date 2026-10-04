@@ -45,6 +45,7 @@ void PollingServer::accept_connections(){
 }
 
 void PollingServer::close_connection(int fd){
+    std::cerr<<"CONNECTION CLOSED fd:"<<fd<<"\n";
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
     client_data.erase(fd);
     close(fd); //TODO: research Automatically removes from epoll 
@@ -54,6 +55,7 @@ void PollingServer::read_data(int fd){
     char raw_buffer[BUFFER_SIZE];
     bool connection_closed = false;
     ClientContext *context = &client_data[fd];
+    // std::cout<<"READING on Fd: "<<fd<<" started \n";
     while(true){
         ssize_t bytes_read = read(fd, raw_buffer, sizeof(raw_buffer)-1);
         if(bytes_read < 0){
@@ -68,60 +70,85 @@ void PollingServer::read_data(int fd){
             break;
         }
 
-        raw_buffer[bytes_read] = '\0';
-        std::cout << "[Client " << fd << "] sent: " << raw_buffer;
         context->input_parser->feed(raw_buffer, bytes_read);
     }
+    // std::cout<<"READING on Fd: "<<fd<<" ended \n";
     if(connection_closed){
         close_connection(fd);
     }else{
         RESPObj result;
+        // std::cout<<"READING on Fd: "<<fd<<" started parsing \n";
         while(context->input_parser->try_parse(result)){
             std::vector<std::string> request_array = context->input_parser->get_command_array(result);
             
             std::string resp;
             if(!query_executer->execute(request_array, resp)){
+                std::cerr<<"UNABLE TO EXECUTE QUERY\n";
                 close_connection(fd);
                 return;
             }
             context->output_buffer.insert(context->output_buffer.end(), resp.begin(), resp.end());
-            
         }
-        write_data(fd);
+        // std::cout<<"READING on Fd: "<<fd<<" ended parsing \n";
+        write_data(fd, true);
     }
 }
 
-void PollingServer::write_data(int fd){
-    bool connection_closed = false;
+void PollingServer::write_data(int fd, bool from_read=false){
     ClientContext *context = &client_data[fd];
+    if(from_read && context->writer_blocked){
+        std::cout<<"WRITER BLOCKED\n";
+        return;
+    }
+    // std::cout<<"Writing on Fd: "<<fd<<" started and from read: "<<from_read<<"\n";
 
     while(context->output_buffer.size() > 0){
         ssize_t bytes_written = write(fd, context->output_buffer.data(), context->output_buffer.size());
         if (bytes_written == -1) {
-            if(errno != EAGAIN || errno != EWOULDBLOCK){
+            if(errno == EINTR){
+                continue;
+            }
+            if(errno == EAGAIN || errno == EWOULDBLOCK){
                 // EPOLLOUT
                 epoll_event ev{};
                 ev.data.fd = fd;
                 ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP | EPOLLOUT;
-                epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
-            }else{
-                std::cerr << "Write error on fd " << fd << std::endl;
-                connection_closed = true;
+                // std::cerr << "[server] socket full; queued "<< context->output_buffer.size() << " response bytes\n";
+                if(epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1){
+                    std::cerr<<"EPOLL MOD TO ENABLEING EPOLLOUT FAILED\n";
+                    close_connection(fd);
+                    return;
+                }
+                
+                // std::cout<<"Writing on Fd: "<<fd<<" paused\n";
+                context->writer_blocked = true;
+                break;
             }
-            break;
+
+            std::cerr << "Write error on fd " << fd << std::endl;
+            close_connection(fd);
+            return;
         }
-        if(bytes_written > 0){
-            context->output_buffer.erase(0, bytes_written);
+        if(bytes_written == 0) {
+            close_connection(fd);
+            std::cerr<<"ZERO BYTES WRITTEN\n";
+            return;
         }
+
+        context->output_buffer.erase(0, bytes_written);
     }
     if(context->output_buffer.size() == 0) {
         epoll_event ev{};
         ev.data.fd = fd;
         ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
-        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
-    }
-    if(connection_closed){
-        close_connection(fd);
+        if(epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1){
+            std::cerr<<"COMPLETE BUFFER WRITE THEN EPOLL MOD FAILED\n";
+            close_connection(fd);
+            return;
+        }
+        
+        // std::cout<<"Writing on Fd: "<<fd<<" finished\n";
+        context->writer_blocked = false;
     }
 }
 int PollingServer::init(){
@@ -177,12 +204,16 @@ int PollingServer::init(){
 
 void PollingServer::run(){
     while(true){
+        
+        // std::cout<<"EPOLL WAIT STARTED \n";
         int nfds = epoll_wait(epoll_fd, events.data(), MAX_EVENTS, -1);
         if(nfds  == -1){
             if(errno == EINTR) continue;
             std::cerr << "Epoll wait error: " << strerror(errno) << std::endl;
             break;
         }
+        
+        // std::cout<<"EPOLL WAIT ENDED \n";
         for(int i=0; i<nfds; i++){
             int fd = events[i].data.fd;
             if((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP)) {

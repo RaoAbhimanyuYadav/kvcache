@@ -14,6 +14,8 @@ bool RESPParser::try_parse(RESPObj &out_obj){
     size_t saved_pos = pos;
     try{
         out_obj = parse();
+        data.erase(saved_pos, pos-saved_pos);
+        pos = 0;
         return true;
     }catch(const IncompleteFrameException&){
         pos = saved_pos;
@@ -25,12 +27,17 @@ bool RESPParser::try_parse(RESPObj &out_obj){
             }
         };
         return true;
+    }catch(...){
+        pos = saved_pos;
+        std::cout<<"ERROR"<<std::endl;
+        return false;
     }
 }
 
 
 RESPObj RESPParser::parse(){
-    if(pos >= data.size()) throw MalformedFrameException("Unexpected end of data stream");
+    if(pos == data.size()) throw IncompleteFrameException();
+    if(pos > data.size()) throw MalformedFrameException("Unexpected end of data stream");
     
     char type_byte = data[pos++];
     switch(type_byte){
@@ -62,12 +69,7 @@ std::string RESPParser::parse_error(){
 }
 
 int64_t RESPParser::parse_integer(){
-    int64_t value;
-    try{
-        return std::stoll(std::string(read_until_crlf()));
-    }catch(...){
-        throw MalformedFrameException("Expected a valid number");
-    }
+    return std::stoll(std::string(read_until_crlf()));
 }
 RESPObj RESPParser::parse_bulk_string(){
     int64_t len = parse_integer();

@@ -24,8 +24,9 @@ constexpr int BUFFER_SIZE = 4096;
 struct ClientContext{
     std::string output_buffer;
     std::unique_ptr<ParserStrategy> input_parser;
-    ClientContext(){}
-    ClientContext(std::string_view parser){
+    bool writer_blocked;
+    ClientContext():writer_blocked(false){}
+    ClientContext(std::string_view parser):writer_blocked(false){
         if(parser == "RESP"){
             input_parser = std::make_unique<RESPParser>();
         }
@@ -50,7 +51,7 @@ class PollingServer{
 
     void read_data(int fd);
 
-    void write_data(int fd);
+    void write_data(int fd, bool from_read);
 
     public:
     
