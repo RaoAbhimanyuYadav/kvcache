@@ -86,18 +86,14 @@ void PollingServer::read_data(int fd){
     RESPObj result;
     // Process complete requests already read even if EOF was observed in the
     // same drain. A hangup event can be delivered together with readable data.
-    while(context->input_parser->try_parse(result)){
+    ParseResult parse_status;
+    while((parse_status = context->input_parser->try_parse(result)) == ParseResult::Success){
         std::vector<std::string> request_array = context->input_parser->get_command_array(result);
-
-        std::string resp;
-        if(!query_executer->execute(request_array, resp)){
-            std::cerr<<"UNABLE TO EXECUTE QUERY\n";
-            close_connection(fd);
-            return;
-        }
-        context->output_buffer.insert(context->output_buffer.end(), resp.begin(), resp.end());
+        context->output_buffer += query_executer->execute(request_array);
     }
-
+    if(parse_status == ParseResult::Rejection){
+        context->close_after_write = true;
+    }
     if (peer_closed) context->close_after_write = true;
     write_data(fd, true);
 }

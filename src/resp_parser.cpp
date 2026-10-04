@@ -28,29 +28,30 @@ void RESPParser::feed(const char* chunk, std::size_t size){
     data.append(chunk, size);
 }
 
-bool RESPParser::try_parse(RESPObj &out_obj){
-    if(pos == data.size()) return false;
+ParseResult RESPParser::try_parse(RESPObj &out_obj){
+    if(pos == data.size()) return ParseResult::Failure;
     size_t saved_pos = pos;
     try{
         out_obj = parse();
-        return true;
+        return ParseResult::Success;
     }catch(const IncompleteFrameException&){
         pos = saved_pos;
-        return false;
+        return ParseResult::Failure;
     }catch(const MalformedFrameException& err){
         out_obj = RESPObj{
             RESPArray{
                 RESPObj{"ERR"}, RESPObj{std::string(err.what())}
             }
         };
+        std::cerr<<"Error in Parse, "<<err.what()<<"\n";
         // Report a malformed frame once and discard the buffered remainder.
         // The server closes this connection after receiving the error object.
         pos = data.size();
-        return true;
+        return ParseResult::Rejection;
     }catch(...){
         pos = saved_pos;
-        std::cout<<"ERROR"<<std::endl;
-        return false;
+        std::cerr<<"Error in Parse, not known type error\n";
+        return ParseResult::Rejection;
     }
 }
 

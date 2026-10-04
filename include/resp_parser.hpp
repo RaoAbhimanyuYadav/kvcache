@@ -27,7 +27,7 @@ class RESPParser:public ParserStrategy{
 
     void feed(const char* chunk, std::size_t size) override;
 
-    bool try_parse(RESPObj &out_obj) override;
+    ParseResult try_parse(RESPObj &out_obj) override;
 
     void  extract_resp_obj(const RESPObj &obj, int depth=0) const override;
 

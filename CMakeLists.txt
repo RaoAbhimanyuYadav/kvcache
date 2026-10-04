@@ -13,8 +13,11 @@ add_library(resp_parser STATIC src/resp_parser.cpp)
 
 add_library(store STATIC src/store.cpp)
 
+add_library(query_executer STATIC src/query_executer.cpp)
+target_link_libraries(query_executer PRIVATE store)
+
 add_library(kvcache_server STATIC src/server.cpp)
-target_link_libraries(kvcache_server PRIVATE resp_parser)
+target_link_libraries(kvcache_server PRIVATE resp_parser query_executer)
 
 
 add_executable(kvcache src/main.cpp )
