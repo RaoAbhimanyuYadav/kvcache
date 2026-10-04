@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -24,7 +25,7 @@ class RESPParser:public ParserStrategy{
     public:
     explicit RESPParser();
 
-    void feed(const char* chunk, uint size) override;
+    void feed(const char* chunk, std::size_t size) override;
 
     bool try_parse(RESPObj &out_obj) override;
 
@@ -34,7 +35,7 @@ class RESPParser:public ParserStrategy{
 
     private:
 
-    RESPObj parse();
+    RESPObj parse(std::size_t depth = 0);
 
     /* carriage return line feed*/
     std::string_view read_until_crlf();
@@ -43,7 +44,7 @@ class RESPParser:public ParserStrategy{
     std::string parse_error();
     int64_t parse_integer();
     RESPObj parse_bulk_string();
-    RESPObj parse_array();
+    RESPObj parse_array(std::size_t depth);
 };
 
 void print_resp(const RESPObj &obj);

@@ -1,10 +1,29 @@
 #include <resp_parser.hpp>
 
+#include <charconv>
+#include <system_error>
+
+namespace {
+
+constexpr std::size_t kParserCompactionThreshold = 1024;
+constexpr std::size_t kMaxRespLineLength = 64;
+constexpr std::size_t kMaxBulkStringLength = 64;
+constexpr std::int64_t kMaxArrayLength = 4;
+constexpr std::size_t kMaxNestingDepth = 1;
+
+}  // namespace
 
 RESPParser::RESPParser() {}
 
-void RESPParser::feed(const char* chunk, uint size){
-    if(pos >= data.size()) clear();
+void RESPParser::feed(const char* chunk, std::size_t size){
+    if (pos >= data.size()) {
+        clear();
+    } else if (pos >= kParserCompactionThreshold && pos >= data.size() / 2) {
+        // Compact only after a meaningful prefix has been consumed. This
+        // avoids shifting the remaining pipeline once for every parsed frame.
+        data.erase(0, pos);
+        pos = 0;
+    }
 
     data.append(chunk, size);
 }
@@ -14,8 +33,6 @@ bool RESPParser::try_parse(RESPObj &out_obj){
     size_t saved_pos = pos;
     try{
         out_obj = parse();
-        data.erase(saved_pos, pos-saved_pos);
-        pos = 0;
         return true;
     }catch(const IncompleteFrameException&){
         pos = saved_pos;
@@ -26,6 +43,9 @@ bool RESPParser::try_parse(RESPObj &out_obj){
                 RESPObj{"ERR"}, RESPObj{std::string(err.what())}
             }
         };
+        // Report a malformed frame once and discard the buffered remainder.
+        // The server closes this connection after receiving the error object.
+        pos = data.size();
         return true;
     }catch(...){
         pos = saved_pos;
@@ -35,7 +55,10 @@ bool RESPParser::try_parse(RESPObj &out_obj){
 }
 
 
-RESPObj RESPParser::parse(){
+RESPObj RESPParser::parse(std::size_t depth){
+    if (depth > kMaxNestingDepth) {
+        throw MalformedFrameException("RESP nesting limit exceeded");
+    }
     if(pos == data.size()) throw IncompleteFrameException();
     if(pos > data.size()) throw MalformedFrameException("Unexpected end of data stream");
     
@@ -45,7 +68,7 @@ RESPObj RESPParser::parse(){
         case '-': return RESPObj{ parse_error() };
         case ':': return RESPObj{ parse_integer() };
         case '$': return parse_bulk_string() ;
-        case '*': return parse_array() ;
+        case '*': return parse_array(depth) ;
         default: throw MalformedFrameException("Unknow Resp type byte: " + std::to_string(type_byte));
     }
 }
@@ -54,7 +77,13 @@ RESPObj RESPParser::parse(){
 std::string_view RESPParser::read_until_crlf(){
     size_t crlf_idx = data.find("\r\n", pos);
     if(crlf_idx == std::string::npos){
+        if (data.size() - pos > kMaxRespLineLength) {
+            throw MalformedFrameException("RESP line exceeds the maximum length");
+        }
         throw IncompleteFrameException();
+    }
+    if (crlf_idx - pos > kMaxRespLineLength) {
+        throw MalformedFrameException("RESP line exceeds the maximum length");
     }
     std::string_view line = std::string_view(data).substr(pos, crlf_idx - pos);
     pos = crlf_idx + 2;
@@ -69,29 +98,51 @@ std::string RESPParser::parse_error(){
 }
 
 int64_t RESPParser::parse_integer(){
-    return std::stoll(std::string(read_until_crlf()));
+    const std::string_view line = read_until_crlf();
+    if (line.empty()) throw MalformedFrameException("Expected a valid integer");
+
+    std::int64_t value = 0;
+    const char* begin = line.data();
+    const char* end = begin + line.size();
+    const auto result = std::from_chars(begin, end, value);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        throw MalformedFrameException("Expected a valid integer");
+    }
+    return value;
 }
 RESPObj RESPParser::parse_bulk_string(){
-    int64_t len = parse_integer();
-    if(len == -1) throw MalformedFrameException("Unable to get proper length of bulk string");
-    if(pos + len + 2 > data.size()){
+    const std::int64_t len = parse_integer();
+    if (len == -1) return RESPObj{nullptr};
+    if (len < 0) throw MalformedFrameException("Invalid bulk string length");
+    if (len > kMaxBulkStringLength) {
+        throw MalformedFrameException("Bulk string exceeds the maximum length");
+    }
+
+    const std::size_t payload_len = static_cast<std::size_t>(len);
+    if (pos > data.size() || data.size() - pos < payload_len ||
+        data.size() - pos - payload_len < 2) {
         throw IncompleteFrameException();
     }
-    std::string payload(data.substr(pos, len));
-    pos+=len;
+    std::string payload(data.substr(pos, payload_len));
+    pos += payload_len;
     if(data.substr(pos, 2) != "\r\n"){
         throw MalformedFrameException("Malformed Bulk String: missing trailing CRLF");
     }
     pos += 2;
     return RESPObj{payload};
 }
-RESPObj RESPParser::parse_array(){
-    int64_t size = parse_integer();
-    if(size == -1) throw MalformedFrameException("Unable to get proper length of array");
+RESPObj RESPParser::parse_array(std::size_t depth){
+    const std::int64_t size = parse_integer();
+    if (size == -1) return RESPObj{nullptr};
+    if (size < 0) throw MalformedFrameException("Invalid array length");
+    if (size > kMaxArrayLength) {
+        throw MalformedFrameException("Array exceeds the maximum element count");
+    }
+
     RESPArray currentArray;
-    currentArray.reserve(size);
-    for(long long i=0; i<size; ++i){
-        currentArray.push_back(parse());
+    currentArray.reserve(static_cast<std::size_t>(size));
+    for(std::int64_t i = 0; i < size; ++i){
+        currentArray.push_back(parse(depth + 1));
     }
     return RESPObj{currentArray};
 }
