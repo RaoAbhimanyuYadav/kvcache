@@ -25,8 +25,9 @@ struct ClientContext{
     std::string output_buffer;
     std::unique_ptr<ParserStrategy> input_parser;
     bool writer_blocked;
-    ClientContext():writer_blocked(false){}
-    ClientContext(std::string_view parser):writer_blocked(false){
+    bool close_after_write;
+    ClientContext():writer_blocked(false), close_after_write(false){}
+    ClientContext(std::string_view parser):writer_blocked(false), close_after_write(false){
         if(parser == "RESP"){
             input_parser = std::make_unique<RESPParser>();
         }
@@ -36,8 +37,8 @@ struct ClientContext{
 class PollingServer{
     int port;
     std::string server_ip;
-    int server_fd;
-    int epoll_fd;
+    int server_fd = -1;
+    int epoll_fd = -1;
     std::vector<epoll_event> events;
     std::unordered_map<int, ClientContext> client_data;
     std::string parser_method;
@@ -51,7 +52,7 @@ class PollingServer{
 
     void read_data(int fd);
 
-    void write_data(int fd, bool from_read);
+    void write_data(int fd, bool from_read = false);
 
     public:
     

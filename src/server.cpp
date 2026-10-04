@@ -6,8 +6,12 @@ PollingServer::PollingServer():port(6379), server_ip("127.0.0.1"), events(MAX_EV
 PollingServer::PollingServer(std::string_view ip, const int port):port(port), server_ip(ip), events(MAX_EVENTS){}
 
 PollingServer::~PollingServer(){
-    close(epoll_fd);
-    close(server_fd);
+    for (const auto& [fd, context] : client_data) {
+        (void)context;
+        close(fd);
+    }
+    if (epoll_fd >= 0) close(epoll_fd);
+    if (server_fd >= 0) close(server_fd);
 }
 
 void PollingServer::set_addr_reuse_opt(){
@@ -38,64 +42,70 @@ void PollingServer::accept_connections(){
             std::cerr << "Failed to add client fd to epoll" << std::endl;
             close(client_fd);
         } else {
+            client_data.emplace(client_fd, ClientContext(parser_method));
             std::cout << "New client connected on fd: " << client_fd << std::endl;
         }
-        client_data[client_fd] = ClientContext(parser_method);
     }
 }
 
 void PollingServer::close_connection(int fd){
     std::cerr<<"CONNECTION CLOSED fd:"<<fd<<"\n";
-    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-    client_data.erase(fd);
-    close(fd); //TODO: research Automatically removes from epoll 
+    const auto client = client_data.find(fd);
+    if (client == client_data.end()) return;
+    if (epoll_fd >= 0) epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+    close(fd);
+    client_data.erase(client);
 }
 
 void PollingServer::read_data(int fd){
     char raw_buffer[BUFFER_SIZE];
-    bool connection_closed = false;
-    ClientContext *context = &client_data[fd];
+    auto client = client_data.find(fd);
+    if (client == client_data.end()) return;
+    ClientContext *context = &client->second;
+    bool peer_closed = false;
     // std::cout<<"READING on Fd: "<<fd<<" started \n";
     while(true){
-        ssize_t bytes_read = read(fd, raw_buffer, sizeof(raw_buffer)-1);
-        if(bytes_read < 0){
-            if(errno == EAGAIN || errno == EWOULDBLOCK) break;
-            std::cerr << "Read error on fd: " << fd << std::endl;
-            break;
+        const ssize_t bytes_read = read(fd, raw_buffer, sizeof(raw_buffer));
+        if (bytes_read < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            std::cerr << "Read error on fd " << fd << ": " << strerror(errno) << std::endl;
+            close_connection(fd);
+            return;
         }
 
-        if(bytes_read == 0){
+        if (bytes_read == 0) {
             std::cout << "Client fd " << fd << " disconnected." << std::endl;
-            connection_closed = true;
+            peer_closed = true;
             break;
         }
 
         context->input_parser->feed(raw_buffer, bytes_read);
     }
     // std::cout<<"READING on Fd: "<<fd<<" ended \n";
-    if(connection_closed){
-        close_connection(fd);
-    }else{
-        RESPObj result;
-        // std::cout<<"READING on Fd: "<<fd<<" started parsing \n";
-        while(context->input_parser->try_parse(result)){
-            std::vector<std::string> request_array = context->input_parser->get_command_array(result);
-            
-            std::string resp;
-            if(!query_executer->execute(request_array, resp)){
-                std::cerr<<"UNABLE TO EXECUTE QUERY\n";
-                close_connection(fd);
-                return;
-            }
-            context->output_buffer.insert(context->output_buffer.end(), resp.begin(), resp.end());
+    RESPObj result;
+    // Process complete requests already read even if EOF was observed in the
+    // same drain. A hangup event can be delivered together with readable data.
+    while(context->input_parser->try_parse(result)){
+        std::vector<std::string> request_array = context->input_parser->get_command_array(result);
+
+        std::string resp;
+        if(!query_executer->execute(request_array, resp)){
+            std::cerr<<"UNABLE TO EXECUTE QUERY\n";
+            close_connection(fd);
+            return;
         }
-        // std::cout<<"READING on Fd: "<<fd<<" ended parsing \n";
-        write_data(fd, true);
+        context->output_buffer.insert(context->output_buffer.end(), resp.begin(), resp.end());
     }
+
+    if (peer_closed) context->close_after_write = true;
+    write_data(fd, true);
 }
 
-void PollingServer::write_data(int fd, bool from_read=false){
-    ClientContext *context = &client_data[fd];
+void PollingServer::write_data(int fd, bool from_read){
+    auto client = client_data.find(fd);
+    if (client == client_data.end()) return;
+    ClientContext *context = &client->second;
     if(from_read && context->writer_blocked){
         std::cout<<"WRITER BLOCKED\n";
         return;
@@ -103,7 +113,8 @@ void PollingServer::write_data(int fd, bool from_read=false){
     // std::cout<<"Writing on Fd: "<<fd<<" started and from read: "<<from_read<<"\n";
 
     while(context->output_buffer.size() > 0){
-        ssize_t bytes_written = write(fd, context->output_buffer.data(), context->output_buffer.size());
+        const ssize_t bytes_written = send(fd, context->output_buffer.data(),
+                                           context->output_buffer.size(), MSG_NOSIGNAL);
         if (bytes_written == -1) {
             if(errno == EINTR){
                 continue;
@@ -149,6 +160,11 @@ void PollingServer::write_data(int fd, bool from_read=false){
         
         // std::cout<<"Writing on Fd: "<<fd<<" finished\n";
         context->writer_blocked = false;
+
+        if (context->close_after_write) {
+            close_connection(fd);
+            return;
+        }
     }
 }
 int PollingServer::init(){
@@ -181,7 +197,7 @@ int PollingServer::init(){
     }
     
     epoll_fd = epoll_create1(0);
-    if (server_fd < 0) {
+    if (epoll_fd < 0) {
         std::cerr << "EPoll creation failed\n";
         goto error_state;
     }
@@ -191,6 +207,7 @@ int PollingServer::init(){
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &ev) == -1) {
         std::cerr << "Epoll ctl failed for server socket: " << strerror(errno) << std::endl;
         close(epoll_fd);
+        epoll_fd = -1;
         goto error_state;
     }
 
@@ -198,7 +215,10 @@ int PollingServer::init(){
 
     return 0;
     error_state:
-        close(server_fd);
+        if (server_fd >= 0) {
+            close(server_fd);
+            server_fd = -1;
+        }
         return -1;
 }
 
@@ -216,17 +236,47 @@ void PollingServer::run(){
         // std::cout<<"EPOLL WAIT ENDED \n";
         for(int i=0; i<nfds; i++){
             int fd = events[i].data.fd;
-            if((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP)) {
-                std::cerr << "Epoll error or hangup on fd " << fd << std::endl;
+            if (fd == server_fd) {
+                if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+                    std::cerr << "Epoll error or hangup on listening socket" << std::endl;
+                    continue;
+                }
+                accept_connections();
+                continue;
+            }
+
+            if (events[i].events & EPOLLERR) {
+                int socket_error = 0;
+                socklen_t length = sizeof(socket_error);
+                getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &length);
+
+                std::cerr << "EPOLLERR fd=" << fd
+                        << " SO_ERROR=" << socket_error
+                        << " (" << strerror(socket_error) << ")\n";
+                std::cerr << "Epoll error on fd " << fd << std::endl;
                 close_connection(fd);
                 continue;
             }
-            if(fd == server_fd){
-                accept_connections();
-            }else if (events[i].events & EPOLLIN){
+
+            // HUP/RDHUP can arrive with unread bytes. Drain and parse those
+            // bytes first; read_data closes only after pending responses flush.
+            if (events[i].events & (EPOLLIN | EPOLLRDHUP | EPOLLHUP)) {
                 read_data(fd);
-            }else if (events[i].events & EPOLLOUT){
+            }
+
+            // Read and write readiness can be reported together. Process both
+            // flags so an EPOLLOUT edge is not lost after handling EPOLLIN.
+            if (client_data.find(fd) != client_data.end() &&
+                (events[i].events & EPOLLOUT)) {
                 write_data(fd);
+            }
+
+            // If HUP was reported without read_data observing EOF, finish
+            // cleanup only after giving it the chance to drain the socket.
+            if (client_data.find(fd) != client_data.end() &&
+                (events[i].events & EPOLLHUP) &&
+                !client_data.at(fd).close_after_write) {
+                close_connection(fd);
             }
         }
     }
