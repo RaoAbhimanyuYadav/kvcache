@@ -43,13 +43,13 @@ void PollingServer::accept_connections(){
             close(client_fd);
         } else {
             client_data.emplace(client_fd, ClientContext(parser_method));
-            std::cout << "New client connected on fd: " << client_fd << std::endl;
+            // std::cout << "New client connected on fd: " << client_fd << std::endl;
         }
     }
 }
 
 void PollingServer::close_connection(int fd){
-    std::cerr<<"CONNECTION CLOSED fd:"<<fd<<"\n";
+    // std::cerr<<"CONNECTION CLOSED fd:"<<fd<<"\n";
     const auto client = client_data.find(fd);
     if (client == client_data.end()) return;
     if (epoll_fd >= 0) epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
@@ -75,7 +75,7 @@ void PollingServer::read_data(int fd){
         }
 
         if (bytes_read == 0) {
-            std::cout << "Client fd " << fd << " disconnected." << std::endl;
+            // std::cout << "Client fd " << fd << " disconnected." << std::endl;
             peer_closed = true;
             break;
         }
@@ -92,6 +92,8 @@ void PollingServer::read_data(int fd){
         context->output_buffer += query_executer->execute(request_array);
     }
     if(parse_status == ParseResult::Rejection){
+        std::vector<std::string> request_array = context->input_parser->get_command_array(result);
+        context->output_buffer += query_executer->execute(request_array);
         context->close_after_write = true;
     }
     if (peer_closed) context->close_after_write = true;

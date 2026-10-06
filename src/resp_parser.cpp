@@ -28,6 +28,18 @@ void RESPParser::feed(const char* chunk, std::size_t size){
     data.append(chunk, size);
 }
 
+RESPObj RESPParser::create_error_response(std::string_view err){
+    std::cerr<<"Error in Parse, "<<err<<"\n";
+    pos = data.size();
+    return RESPObj{
+        RESPArray{
+            RESPObj{"ERR"}, RESPObj{(std::string)err}
+        }
+    };
+    // Report a malformed frame once and discard the buffered remainder.
+    // The server closes this connection after receiving the error object.
+}
+
 ParseResult RESPParser::try_parse(RESPObj &out_obj){
     if(pos == data.size()) return ParseResult::Failure;
     size_t saved_pos = pos;
@@ -38,19 +50,13 @@ ParseResult RESPParser::try_parse(RESPObj &out_obj){
         pos = saved_pos;
         return ParseResult::Failure;
     }catch(const MalformedFrameException& err){
-        out_obj = RESPObj{
-            RESPArray{
-                RESPObj{"ERR"}, RESPObj{std::string(err.what())}
-            }
-        };
-        std::cerr<<"Error in Parse, "<<err.what()<<"\n";
-        // Report a malformed frame once and discard the buffered remainder.
-        // The server closes this connection after receiving the error object.
-        pos = data.size();
+        out_obj = create_error_response(err.what());
+        return ParseResult::Rejection;
+    }catch(const ThresholdExceedFrameException& err){
+        out_obj = create_error_response(err.what());
         return ParseResult::Rejection;
     }catch(...){
-        pos = saved_pos;
-        std::cerr<<"Error in Parse, not known type error\n";
+        out_obj = create_error_response("INVALID RESP FORMAT");
         return ParseResult::Rejection;
     }
 }
@@ -58,7 +64,7 @@ ParseResult RESPParser::try_parse(RESPObj &out_obj){
 
 RESPObj RESPParser::parse(std::size_t depth){
     if (depth > kMaxNestingDepth) {
-        throw MalformedFrameException("RESP nesting limit exceeded");
+        throw ThresholdExceedFrameException("RESP nesting limit exceeded");
     }
     if(pos == data.size()) throw IncompleteFrameException();
     if(pos > data.size()) throw MalformedFrameException("Unexpected end of data stream");
@@ -79,12 +85,12 @@ std::string_view RESPParser::read_until_crlf(){
     size_t crlf_idx = data.find("\r\n", pos);
     if(crlf_idx == std::string::npos){
         if (data.size() - pos > kMaxRespLineLength) {
-            throw MalformedFrameException("RESP line exceeds the maximum length");
+            throw ThresholdExceedFrameException("RESP line exceeds the maximum length");
         }
         throw IncompleteFrameException();
     }
     if (crlf_idx - pos > kMaxRespLineLength) {
-        throw MalformedFrameException("RESP line exceeds the maximum length");
+        throw ThresholdExceedFrameException("RESP line exceeds the maximum length");
     }
     std::string_view line = std::string_view(data).substr(pos, crlf_idx - pos);
     pos = crlf_idx + 2;
@@ -116,7 +122,7 @@ RESPObj RESPParser::parse_bulk_string(){
     if (len == -1) return RESPObj{nullptr};
     if (len < 0) throw MalformedFrameException("Invalid bulk string length");
     if (len > kMaxBulkStringLength) {
-        throw MalformedFrameException("Bulk string exceeds the maximum length");
+        throw ThresholdExceedFrameException("Bulk string exceeds the maximum length");
     }
 
     const std::size_t payload_len = static_cast<std::size_t>(len);
@@ -137,7 +143,7 @@ RESPObj RESPParser::parse_array(std::size_t depth){
     if (size == -1) return RESPObj{nullptr};
     if (size < 0) throw MalformedFrameException("Invalid array length");
     if (size > kMaxArrayLength) {
-        throw MalformedFrameException("Array exceeds the maximum element count");
+        throw ThresholdExceedFrameException("Array exceeds the maximum element count");
     }
 
     RESPArray currentArray;

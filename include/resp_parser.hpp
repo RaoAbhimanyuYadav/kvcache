@@ -21,6 +21,13 @@ class MalformedFrameException : public std::runtime_error{
     MalformedFrameException(const std::string&& err) : std::runtime_error(err){}
 };
 
+
+class ThresholdExceedFrameException : public std::runtime_error{
+    public:
+    ThresholdExceedFrameException(const std::string&& err) : std::runtime_error(err){}
+};
+
+
 class RESPParser:public ParserStrategy{
     public:
     explicit RESPParser();
@@ -45,6 +52,7 @@ class RESPParser:public ParserStrategy{
     int64_t parse_integer();
     RESPObj parse_bulk_string();
     RESPObj parse_array(std::size_t depth);
+    RESPObj create_error_response(std::string_view err);
 };
 
 void print_resp(const RESPObj &obj);

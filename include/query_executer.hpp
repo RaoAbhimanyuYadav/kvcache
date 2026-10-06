@@ -10,6 +10,7 @@
 #include <cassert>
 
 #include "store.hpp"
+#include "global.hpp"
 
 
 
@@ -25,7 +26,7 @@ class InvalidArgumentsLengthExecption : public std::runtime_error{
 
 class FailedToExecuteExecption : public std::runtime_error{ 
     public:
-    FailedToExecuteExecption():std::runtime_error("-ERR System error Unable to execute the command.\r\n"){}
+    FailedToExecuteExecption(const std::string_view err):std::runtime_error("-ERR System error Unable to execute the command\'" + (std::string)err +"\'.\r\n"){}
 };
 
 
