@@ -121,7 +121,11 @@ void PollingServer::write_data(int fd, bool from_read){
                 // EPOLLOUT
                 epoll_event ev{};
                 ev.data.fd = fd;
-                ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP | EPOLLOUT;
+                if(context->close_after_write){
+                    ev.events = EPOLLET | EPOLLRDHUP | EPOLLOUT;
+                }else{
+                    ev.events = EPOLLIN | EPOLLET | EPOLLRDHUP | EPOLLOUT;
+                }
                 // std::cerr << "[server] socket full; queued "<< context->output_buffer.size() << " response bytes\n";
                 if(epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1){
                     std::cerr<<"EPOLL MOD TO ENABLEING EPOLLOUT FAILED\n";

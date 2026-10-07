@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cerrno>
 #include <cstdint>
@@ -110,25 +111,42 @@ private:
 };
 
 bool send_all(int fd, const std::string& request) {
+    constexpr auto kSendTimeout = std::chrono::seconds(30);
+    const auto deadline = std::chrono::steady_clock::now() + kSendTimeout;
     std::size_t sent = 0;
-    unsigned long long next_report = 0;
     while (sent < request.size()) {
-        const ssize_t count = send(fd, request.data() + sent, request.size() - sent, MSG_NOSIGNAL);
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            std::cerr << "send_all timed out after " << sent << " of " << request.size()
+                      << " bytes\n";
+            return false;
+        }
+
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        pollfd event{};
+        event.fd = fd;
+        event.events = POLLOUT;
+        const int ready = poll(&event, 1, std::max(1, static_cast<int>(remaining.count())));
+        if (ready == -1 && errno == EINTR) continue;
+        if (ready == 0) continue;
+        if (ready == -1) {
+            std::cerr << "send_all poll failed: " << strerror(errno) << '\n';
+            return false;
+        }
+
+        const ssize_t count = send(fd, request.data() + sent, request.size() - sent,
+                                   MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (count == -1 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         if (count <= 0) {
-            if(errno == EAGAIN || errno == EWOULDBLOCK){
-                std::cerr << strerror(errno) <<std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                continue;
+            if (count == 0) {
+                std::cerr << "send_all: socket made no progress after " << sent << " bytes\n";
+                return false;
             }
             std::cerr << "send_all failed after " << sent << " of " << request.size()
-                    << " bytes: " << strerror(errno) << std::endl;
+                      << " bytes: " << strerror(errno) << '\n';
             return false;
         }
         sent += static_cast<std::size_t>(count);
-        if (sent >= next_report) {
-            std::cerr << "[client] sent " << sent << " / " << request.size() << " bytes\n";
-            next_report +=  1024;
-        }
     }
     return true;
 }
@@ -138,7 +156,10 @@ bool wait_until_readable(int fd, int timeout_ms) {
     event.fd = fd;
     event.events = POLLIN;
 
-    int result = poll(&event, 1, timeout_ms);
+    int result;
+    do {
+        result = poll(&event, 1, timeout_ms);
+    } while (result == -1 && errno == EINTR);
     
     // 1. Check if poll failed (result == -1) or timed out (result == 0)
     if (result <= 0) {
@@ -159,8 +180,11 @@ std::string receive_exactly(int fd, std::size_t expected_size) {
 
     while (response.size() < expected_size) {
         const auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) break;
-
+        if (now >= deadline) {
+            std::cerr << "receive timeout: " << response.size()
+                    << " / " << expected_size << " bytes\n";
+            break;
+        }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
         pollfd event{};
         event.fd = fd;
@@ -173,8 +197,11 @@ std::string receive_exactly(int fd, std::size_t expected_size) {
 
         char buffer[8192];
         const std::size_t wanted = std::min(sizeof(buffer), expected_size - response.size());
-        const ssize_t count = recv(fd, buffer, wanted, 0);
-        if (count == -1 && errno == EINTR) continue;
+        const ssize_t count = recv(fd, buffer, wanted, MSG_DONTWAIT);
+        if (count == -1 &&
+            (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+            continue;
+        }
         if (count <= 0) break;
         response.append(buffer, static_cast<std::size_t>(count));
     }
@@ -238,7 +265,7 @@ TEST(PollingServerIntegrationTest, UnsupportedCommandReturnsErrorAndKeepsConnect
     ASSERT_GE(client_fd, 0);
 
     const std::string request = "*1\r\n$4\r\nNOPE\r\n";
-    const std::string error = "-ERR Unsupported Command\r\n";
+    const std::string error = "-ERR Unsupported Command \'NOPE\'.\r\n";
     ASSERT_TRUE(send_all(client_fd, request));
     EXPECT_EQ(receive_exactly(client_fd, error.size()), error);
 
@@ -251,9 +278,10 @@ TEST(PollingServerIntegrationTest, MalformedRequestClosesOnlyItsClientConnection
     ServerProcess server;
     const int malformed_client_fd = server.connect_client();
     ASSERT_GE(malformed_client_fd, 0);
-
+    
+    const std::string error = "-ERR";
     ASSERT_TRUE(send_all(malformed_client_fd, "?\r\n"));
-    EXPECT_TRUE(receive_exactly(malformed_client_fd, 1).empty());
+    EXPECT_EQ(receive_exactly(malformed_client_fd, 1024).substr(0,4), error);
     close(malformed_client_fd);
 
     const int healthy_client_fd = server.connect_client();
@@ -309,12 +337,13 @@ TEST(PollingServerIntegrationTest, FlushesPendingOutputAfterClientStartsReading)
     ASSERT_TRUE(wait_until_readable(client_fd, 5000));
     std::cerr<<"WAITIFG OVER\n";
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    // std::cerr<<"SLEEP OVER\n";
+    std::cerr<<"SLEEP OVER\n";
     std::string expected;
     expected.reserve(kRequestCount * (sizeof(kPongResponse) - 1));
     for (int i = 0; i < kRequestCount; ++i) expected += kPongResponse;
+    std::cerr<<"RECEIVE STARTED\n";
     EXPECT_EQ(receive_exactly(client_fd, expected.size()), expected);
-    // std::cerr<<"RECIVE OVER\n";
+    std::cerr<<"RECIVE OVER\n";
     close(client_fd);
 }
 
@@ -338,24 +367,24 @@ READING on Fd: 5 ended
 CONNECTION CLOSED fd:5
 EPOLL WAIT STARTED
 */
-// TEST(PollingServerIntegrationTest, SlowReaderDoesNotBlockAnotherClient) {
-//     ServerProcess server;
-//     const int slow_client_fd = server.connect_client(1024);
-//     ASSERT_GE(slow_client_fd, 0);
+TEST(PollingServerIntegrationTest, SlowReaderDoesNotBlockAnotherClient) {
+    ServerProcess server;
+    const int slow_client_fd = server.connect_client(1024);
+    ASSERT_GE(slow_client_fd, 0);
 
-//     constexpr int kRequestCount = 600000;
-//     std::string requests;
-//     requests.reserve(kRequestCount * sizeof(kPingRequest));
-//     for (int i = 0; i < kRequestCount; ++i) requests += kPingRequest;
+    constexpr int kRequestCount = 600000;
+    std::string requests;
+    requests.reserve(kRequestCount * sizeof(kPingRequest));
+    for (int i = 0; i < kRequestCount; ++i) requests += kPingRequest;
 
-//     ASSERT_TRUE(send_all(slow_client_fd, requests));
-//     ASSERT_TRUE(wait_until_readable(slow_client_fd, 5000));
-//     std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_TRUE(send_all(slow_client_fd, requests));
+    ASSERT_TRUE(wait_until_readable(slow_client_fd, 5000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-//     const int fast_client_fd = server.connect_client();
-//     ASSERT_GE(fast_client_fd, 0);
-//     ASSERT_TRUE(send_all(fast_client_fd, kPingRequest));
-//     EXPECT_EQ(receive_exactly(fast_client_fd, sizeof(kPongResponse) - 1), kPongResponse);
-//     close(fast_client_fd);
-//     close(slow_client_fd);
-// }
+    const int fast_client_fd = server.connect_client();
+    ASSERT_GE(fast_client_fd, 0);
+    ASSERT_TRUE(send_all(fast_client_fd, kPingRequest));
+    EXPECT_EQ(receive_exactly(fast_client_fd, sizeof(kPongResponse) - 1), kPongResponse);
+    close(fast_client_fd);
+    close(slow_client_fd);
+}
