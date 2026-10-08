@@ -57,39 +57,42 @@ FetchContent_MakeAvailable(googletest)
 enable_testing()
 
 
+include(GoogleTest)
 
 # --------------------------------------------------
 # KVcache Tests
 # --------------------------------------------------
 
 add_executable(kvcache_test
-    tests/test_main.cpp
+tests/test_main.cpp
 )
 
 target_compile_options(kvcache_test PRIVATE
-    -O0
-    -g
-    -Wall
-    -Wextra
-    -Wpedantic
-    -fsanitize=address,undefined
-    -fno-omit-frame-pointer
+-O0
+-g
+-Wall
+-Wextra
+-Wpedantic
+-fsanitize=address,undefined
+-fno-omit-frame-pointer
 )
 
 target_link_options(kvcache_test PRIVATE
-    -fsanitize=address,undefined
+-fsanitize=address,undefined
 )
 
 target_link_libraries(kvcache_test PRIVATE gtest_main)
+gtest_discover_tests(kvcache_test)
 
 # --------------------------------------------------
 # Smoke Tests
 # --------------------------------------------------
 
 add_executable(smoke_test 
-    tests/smoke_test.cpp
+tests/smoke_test.cpp
 )
 target_link_libraries(smoke_test PRIVATE gtest_main)
+gtest_discover_tests(smoke_test)
 
 
 # --------------------------------------------------
@@ -98,7 +101,15 @@ target_link_libraries(smoke_test PRIVATE gtest_main)
 
 add_executable(store_tests tests/store_tests.cpp)
 target_link_libraries(store_tests PRIVATE gtest_main store)
+gtest_discover_tests(store_tests)
 
+# --------------------------------------------------
+# Parser Tests
+# --------------------------------------------------
+
+add_executable(resp_parser_tests tests/resp_parser_tests.cpp)
+target_link_libraries(resp_parser_tests PRIVATE gtest_main resp_parser)
+gtest_discover_tests(resp_parser_tests)
 
 # --------------------------------------------------
 # Server Tests
@@ -106,17 +117,13 @@ target_link_libraries(store_tests PRIVATE gtest_main store)
 
 add_executable(server_tests tests/server_tests.cpp)
 target_link_libraries(server_tests PRIVATE gtest_main kvcache_server)
+gtest_discover_tests(server_tests)
 
 
 # --------------------------------------------------
 # Tests Discovery
 # --------------------------------------------------
 
-include(GoogleTest)
-gtest_discover_tests(smoke_test)
-gtest_discover_tests(store_tests)
-gtest_discover_tests(server_tests)
-gtest_discover_tests(kvcache_test)
 # add_test(
 #     NAME SmokeTest
 #     COMMAND smoke_test
