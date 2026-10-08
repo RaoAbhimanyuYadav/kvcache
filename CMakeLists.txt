@@ -112,6 +112,14 @@ target_link_libraries(resp_parser_tests PRIVATE gtest_main resp_parser)
 gtest_discover_tests(resp_parser_tests)
 
 # --------------------------------------------------
+# Query Executer Tests
+# --------------------------------------------------
+
+add_executable(query_executer_tests tests/query_executer_tests.cpp)
+target_link_libraries(query_executer_tests PRIVATE gtest_main query_executer)
+gtest_discover_tests(query_executer_tests)
+
+# --------------------------------------------------
 # Server Tests
 # --------------------------------------------------
 

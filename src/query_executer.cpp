@@ -17,6 +17,7 @@ std::string QueryExecuter::try_execution(const std::vector<std::string> &args){
     if(args.size() == 0) throw InvalidNumberOfArgumentsExecption();
     const std::string& cmd = args[0];
     if(cmd == "PING"){
+        if(args.size() != 1) throw InvalidNumberOfArgumentsExecption();
         return "+PONG\r\n";
     }
     if(cmd == "SET") {
