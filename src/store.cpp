@@ -1,5 +1,4 @@
 #include "store.hpp"
-#include "global.hpp"
 
 bool Store::set_key_value(const std::string& key, const std::string& val){
     if(key.size() > KEY_MAX_SIZE || val.size() > VALUE_MAX_SIZE) return false;

@@ -4,6 +4,8 @@
 #include <utility>
 #include <string>
 
+#include "global.hpp"
+
 class Store{
     public:
     bool set_key_value(const std::string& key, const std::string& val);
