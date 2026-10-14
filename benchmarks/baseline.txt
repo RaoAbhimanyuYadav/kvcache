@@ -1,0 +1,24 @@
+redis-benchmark -h 127.0.0.1 -p 6379 -n 20 -c 50 -t get,set -r 200000 --csv
+
+redis-server
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET","952.38","18.121","2.888","20.767","20.943","20.975","20.975"
+"GET","1250.00","15.463","15.264","15.447","15.647","15.687","15.687"
+
+kvcache
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET","10000.00","0.468","0.360","0.463","0.591","0.615","0.615"
+"GET","20000.00","0.571","0.232","0.663","0.783","0.799","0.799"
+
+
+redis-benchmark -h 127.0.0.1 -p 6379 -n 200000 -c 50 -t get,set -r 200000 --csv
+
+redis-server
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET","95465.39","0.293","0.072","0.271","0.471","0.639","8.647"
+"GET","95465.39","0.293","0.088","0.271","0.455","0.623","10.791"
+
+kvcache
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET","33909.80","1.394","0.184","1.287","1.951","4.567","207.999"
+"GET","41675.35","1.097","0.160","1.087","1.583","1.951","12.503"

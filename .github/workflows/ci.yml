@@ -38,3 +38,29 @@ jobs:
         run: |
           cd ${{github.workspace}}/build
           ctest --output-on-failure -C Release
+
+      - name: Cache Redis Tools Package
+        id: cache-redis-tools
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-redis-tools
+
+      - name: Install Redis Benchmark Tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --download-only redis-tools
+          sudo dpkg -i /var/cache/apt/archives/*.deb || sudo apt-get install -y redis-tools
+
+      # Launch custom compiled server binary in the background
+      - name: Start Custom Server
+        run: |
+          ${{github.workspace}}/build/kvcache & 
+          # Wait up to 5 seconds for your server to wake up on port 6379
+          for i in {1..5}; do nc -z 127.0.0.1 6379 && break || sleep 1; done
+
+      # Runs your performance regression script
+      - name: Run Performance Benchmark Check
+        run: ./benchmarks/ci_check.sh
+        env:
+          CI_BASELINE_RPS: 1
