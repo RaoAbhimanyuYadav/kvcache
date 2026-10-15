@@ -63,4 +63,4 @@ jobs:
       - name: Run Performance Benchmark Check
         run: ./benchmarks/ci_check.sh
         env:
-          CI_BASELINE_RPS: 1
+          CI_BASELINE_RPS: 68965 
